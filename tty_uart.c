@@ -8,14 +8,18 @@
  *
  * Cross-compile with cross-gcc -I /path/to/cross-kernel/include
  *
- * Version: V1.1
+ * Version: V1.3
  * 
  * Update Log:
  * V1.0 - initial version
- * V1.1 - add hardflow control
- 		- add sendbreak
- 		- add uart to file function
-		- VTIME and VMIN changed
+ * V1.1 - added hardflow control methods
+ *		- added sendbreak methods
+ *		- added uart to file function
+ *		- VTIME and VMIN changed
+ * V1.2 - added supports for custom baud rates
+ * V1.3 - added supports of get/set uart settings/state,
+ *      - added supports of wait_modem_change
+ *
  */
  
 #include <stdio.h>
@@ -23,32 +27,29 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>  
-#include <termios.h>  
 #include <errno.h>   
 #include <string.h>
 #include <sys/types.h> 
 #include <sys/stat.h>
-#include <sys/ioctl.h>
 #include <signal.h>
 #include <getopt.h>
 #include <linux/serial.h>
+#define termios asmtermios
+#include <asm/termios.h>
+#undef  termios
+#include <termios.h>
 
-#ifndef TIOCGRS485
-#define TIOCGRS485 _IOR('T', 0x2E, struct serial_rs485)
-#endif
-#ifndef TIOCSRS485
-#define TIOCSRS485 _IOWR('T', 0x2F, struct serial_rs485)
-#endif
+extern int ioctl(int d, int request, ...);
 
 static const char *device = "/dev/ttyUSB0";
-static int speed = 9600;
+static int speed = 115200;
 static int hardflow = 0;
 static int verbose = 0;
-static int rs485 = 0;
 static int savefile = 0;
 static FILE *fp;
 
 static const struct option lopts[] = {
+	{ "help", no_argument, 0, 0 },
 	{ "device", required_argument, 0, 'D' },
 	{ "speed", optional_argument, 0, 'S' },
 	{ "verbose", optional_argument, 0, 'v' },
@@ -60,11 +61,11 @@ static const struct option lopts[] = {
 static void print_usage(const char *prog)
 {
 	printf("Usage: %s [-DSvfs]\n", prog);
-	puts("  -D --device    tty device to use\n"
-		 "  -S --speed     uart speed\n"
+	puts("	-h --help\n"
+		 "  -D --device    tty device to use(default ttyUSB0)\n"
+		 "  -S --speed     uart speed(default 115200)\n"
 		 "  -v --verbose   Verbose (show rx buffer)\n"
 		 "  -f --hardflow  open hardware flowcontrol\n"
-		 "  -R --rs485     enable rs485 function\n"
 		 "  -s --savefile  save rx data to file\n");
 	exit(1);
 }
@@ -74,7 +75,7 @@ static void parse_opts(int argc, char *argv[])
 	int c;
 	
 	while (1) {
-		c = getopt_long(argc, argv, "D:S::vfsh", lopts, NULL);
+		c = getopt_long(argc, argv, "D:S:vfsh", lopts, NULL);
 		if (c == -1) {
 			break;
 		}
@@ -92,10 +93,7 @@ static void parse_opts(int argc, char *argv[])
 			break;
 		case 'f':
 			hardflow = 1;
-			break;
-		case 'R':
-			rs485 = 1;
-			break;		
+			break;	
 		case 's':
 			savefile = 1;
 			break;
@@ -107,58 +105,40 @@ static void parse_opts(int argc, char *argv[])
 	}
 }
 
-int speed_arr[] = {
-	B4000000,
-	B3000000,
-	B2500000,
-	B2000000,
-	B1000000,
-	B921600,
-	B460800,
-	B230400,
-	B115200,
-	B57600,
-	B38400,
-	B19200,
-	B9600,
-	B4800,
-	B2400,
-	B1200,
-	B600,
-	B300,
-	B200,
-	B150,
-	B110,
-	B75,
-	B50
-};
- 
-int name_arr[] = {
-	4000000,
-	3000000,
-	2500000,
-	2000000,
-	1000000,
-	921600,
-	460800,
-	230400,
-	115200,
-	57600,
-	38400,
-	19200,
-	9600,
-	4800,
-	2400,
-	1200,
-	600,
-	300,
-	200,
-	150,
-	110,
-	75,
-	50
-};
- 
+/**
+ * libtty_setcustombaudrate - set baud rate of tty device
+ * @fd: device handle
+ * @speed: baud rate to set
+ *
+ * The function return 0 if success, or -1 if fail.
+ */
+int libtty_setcustombaudrate(int fd, int baudrate)
+{
+	struct termios2 tio;
+
+	if (ioctl(fd, TCGETS2, &tio)) {
+		perror("TCGETS2");
+		return -1;
+	}
+
+	tio.c_cflag &= ~CBAUD;
+	tio.c_cflag |= BOTHER;
+	tio.c_ispeed = baudrate;
+	tio.c_ospeed = baudrate;
+
+	if (ioctl(fd, TCSETS2, &tio)) {
+		perror("TCSETS2");
+		return -1;
+	}
+
+	if (ioctl(fd, TCGETS2, &tio)) {
+		perror("TCGETS2");
+		return -1;
+	}
+
+	return 0;
+}
+
 /**
  * libtty_setopt - config tty device
  * @fd: device handle
@@ -186,14 +166,6 @@ int libtty_setopt(int fd, int speed, int databits, int stopbits, char parity, ch
 	newtio.c_cflag |= CLOCAL | CREAD;
 	newtio.c_cflag &= ~CSIZE;
  
-	/* set tty speed */
-	for (i = 0; i < sizeof(speed_arr) / sizeof(int); i++) {
-		if (speed == name_arr[i]) {      
-			cfsetispeed(&newtio, speed_arr[i]); 
-			cfsetospeed(&newtio, speed_arr[i]);   
-		} 
-	}
-	
 	/* set data bits */
 	switch (databits) {
 	case 5:                
@@ -263,6 +235,13 @@ int libtty_setopt(int fd, int speed, int databits, int stopbits, char parity, ch
 		perror("tcsetattr");
 		return -1;
 	}
+
+	/* set tty speed */
+	if (libtty_setcustombaudrate(fd, speed) != 0) {
+		perror("setbaudrate");
+		return -1;
+	}
+
 	return 0;
 }
  
@@ -341,7 +320,10 @@ int libtty_tiocmget(int fd)
 	unsigned long modembits = 0;
 	int ret;
 
-	ret = ioctl(fd, TIOCMGET, &modembits);
+	ret = ioctl(fd, TIOCMGET, &modembits);	
+	if (ret)
+		return ret;
+	
 	if (modembits & TIOCM_DSR)
 		printf("DSR Active!\n");
 	if (modembits & TIOCM_CTS)
@@ -350,42 +332,8 @@ int libtty_tiocmget(int fd)
 		printf("DCD Active!\n");
 	if (modembits & TIOCM_RI)
 		printf("RI Active!\n");
-	
-	if (ret)
-		return ret;
-	else
-		return modembits;
-}
 
-/**
- * libtty_rs485set - rs485 set
- * @fd: file descriptor of tty device
- * @enable: 0 on disable, other on enable
- *
- * The function return 0 if success, others if fail.
- */
-int libtty_rs485set(int fd, char enable)
-{
-	struct serial_rs485 rs485conf;
-	
-	if (enable)
-		rs485conf.flags |= SER_RS485_ENABLED;
-	else
-		rs485conf.flags &= ~SER_RS485_ENABLED;
-	
-	return ioctl(fd, TIOCSRS485, &rs485conf);
-}
-
-/**
- * libtty_rs485get - rs485 get
- * @fd: file descriptor of tty device
- * @rs485conf: pointer to struct serial_rs485
- *
- * The function return 0 if success, others if fail.
- */
-int libtty_rs485get(int fd, struct serial_rs485 *rs485conf)
-{
-	return ioctl(fd, TIOCGRS485, rs485conf);
+	return modembits;
 }
 
 /**
@@ -446,6 +394,98 @@ void libtty_read(int fd)
 	}
 }
 
+/**
+ * libtty_get_uart_settings - get uart settings
+ * @fd: file descriptor of tty device
+ *
+ * The function return 0 if success, others if fail.
+ */
+static int libtty_get_uart_settings(int fd)
+{
+	int ret;
+	struct serial_struct ss;
+
+	ret = ioctl(fd, TIOCGSERIAL, &ss);
+	if (ret < 0) {
+		perror("TIOCGSERIAL failed");
+		return ret;
+	}
+
+	printf("TIOCGSERIAL: xmit_fifo_size = %i, baud_base = %i, "
+			"close_delay = %i, closing_wait = %i\n",
+			ss.xmit_fifo_size, ss.baud_base,
+			ss.close_delay, ss.closing_wait);
+	
+	return ret;
+}
+
+/**
+ * libtty_set_uart_settings - set uart
+ * @fd: file descriptor of tty device
+ *
+ * The function return 0 if success, others if fail.
+ */
+static int libtty_set_uart_settings(int fd, struct serial_struct *ss)
+{
+	int ret;
+
+	ret = ioctl(fd, TIOCSSERIAL, ss);
+	if (ret < 0) {
+		perror("TIOCSSERIAL failed");
+	}
+	return ret;
+}
+
+/**
+ * libtty_get_uart_state - get uart state
+ * @fd: file descriptor of tty device
+ *
+ * The function return 0 if success, others if fail.
+ */
+static int libtty_get_uart_state(int fd)
+{
+	int ret;
+	struct serial_icounter_struct icount = { 0 };
+
+	ret = ioctl(fd, TIOCGICOUNT, &icount);
+	if (ret < 0) {
+		perror("TIOCGSERIAL failed");
+		return ret;
+	}
+
+	printf("TIOCGICOUNT: cts = %i, dsr = %i, ring = %i, dcd = %i "
+			"frame(error) = %i, paritry(error) = %i, overrun(error) = %i\n",
+			icount.cts, icount.dsr, icount.rng, icount.dcd,
+			icount.frame, icount.parity, icount.overrun);
+	
+	return ret;
+}
+
+/**
+ * libtty_wait_modem_change - wait for any of the 4 modem bits
+ * (DCD, RI, DSR, CTS) to change. The caller should use TIOCGICOUNT
+ * to see which bit has changed.
+ *
+ * @fd: file descriptor of tty device
+ * @arg: The bits of interest are specified as a bit mask
+ * in arg, by ORing together any of the bit values,
+ * TIOCM_RNG, TIOCM_DSR, TIOCM_CD, and TIOCM_CTS.
+ *
+ * The function return 0 if success, others if fail.
+ */
+static int libtty_wait_modem_change(int fd, unsigned long arg)
+{
+	int ret;
+	
+	ret = ioctl(fd, TIOCMIWAIT, arg);
+	if (ret < 0) {
+		perror("TIOCGSERIAL failed");
+		return ret;
+	}
+
+	return ret;
+}
+
 void sig_handler(int signo)
 {
     printf("capture sign no:%d\n",signo);
@@ -497,19 +537,11 @@ int main(int argc, char *argv[])
 		exit(0);
 	}
 
-/*	
-	ret = libtty_rs485set(fd, rs485);
-	if (ret != 0) {
-		printf("libtty_rs485set %s error.\n", rs485 ? "enable" : "disable");
-		exit(0);
-	}
-*/
-
 	while (1) {
 		if (c != '\n')
 			printf("press s to set modem, z to clear modem, g to get modem, "
 					"b to send break, w to write, r to read, "
-					"G to test gpio, q for quit.\n");
+					"C to get uart state, W to wait modem change, q for quit.\n");
 		scanf("%c", &c);
 		if (c == 'q')
 			break;
@@ -528,6 +560,12 @@ int main(int argc, char *argv[])
 			break;
 		case 'w':
 			libtty_write(fd);
+			break;
+		case 'C':
+			libtty_get_uart_state(fd);
+			break;
+		case 'W':
+			libtty_wait_modem_change(fd, TIOCM_RNG | TIOCM_DSR | TIOCM_CD | TIOCM_CTS);
 			break;
 		case 'r':
 			libtty_read(fd);
