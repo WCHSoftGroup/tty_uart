@@ -8,17 +8,15 @@
  *
  * Cross-compile with cross-gcc -I /path/to/cross-kernel/include
  *
- * Version: V1.3
+ * Version: V1.1
  * 
  * Update Log:
  * V1.0 - initial version
- * V1.1 - added hardflow control methods
- *		- added sendbreak methods
- *		- added uart to file function
+ * V1.1 - add hardflow control
+ *		- add sendbreak
+ *		- add uart to file function
  *		- VTIME and VMIN changed
- * V1.2 - added supports for custom baud rates
- * V1.3 - added supports of get/set uart settings/state,
- *      - added supports of wait_modem_change
+ * V1.2 - add custom baud rates supports
  *
  */
  
@@ -42,14 +40,13 @@
 extern int ioctl(int d, int request, ...);
 
 static const char *device = "/dev/ttyUSB0";
-static int speed = 115200;
+static int speed = 9600;
 static int hardflow = 0;
 static int verbose = 0;
 static int savefile = 0;
 static FILE *fp;
 
 static const struct option lopts[] = {
-	{ "help", no_argument, 0, 0 },
 	{ "device", required_argument, 0, 'D' },
 	{ "speed", optional_argument, 0, 'S' },
 	{ "verbose", optional_argument, 0, 'v' },
@@ -61,9 +58,8 @@ static const struct option lopts[] = {
 static void print_usage(const char *prog)
 {
 	printf("Usage: %s [-DSvfs]\n", prog);
-	puts("	-h --help\n"
-		 "  -D --device    tty device to use(default ttyUSB0)\n"
-		 "  -S --speed     uart speed(default 115200)\n"
+	puts("  -D --device    tty device to use\n"
+		 "  -S --speed     uart speed\n"
 		 "  -v --verbose   Verbose (show rx buffer)\n"
 		 "  -f --hardflow  open hardware flowcontrol\n"
 		 "  -s --savefile  save rx data to file\n");
@@ -75,7 +71,7 @@ static void parse_opts(int argc, char *argv[])
 	int c;
 	
 	while (1) {
-		c = getopt_long(argc, argv, "D:S:vfsh", lopts, NULL);
+		c = getopt_long(argc, argv, "D:S::vfsh", lopts, NULL);
 		if (c == -1) {
 			break;
 		}
@@ -320,10 +316,7 @@ int libtty_tiocmget(int fd)
 	unsigned long modembits = 0;
 	int ret;
 
-	ret = ioctl(fd, TIOCMGET, &modembits);	
-	if (ret)
-		return ret;
-	
+	ret = ioctl(fd, TIOCMGET, &modembits);
 	if (modembits & TIOCM_DSR)
 		printf("DSR Active!\n");
 	if (modembits & TIOCM_CTS)
@@ -332,8 +325,11 @@ int libtty_tiocmget(int fd)
 		printf("DCD Active!\n");
 	if (modembits & TIOCM_RI)
 		printf("RI Active!\n");
-
-	return modembits;
+	
+	if (ret)
+		return ret;
+	else
+		return modembits;
 }
 
 /**
@@ -394,98 +390,6 @@ void libtty_read(int fd)
 	}
 }
 
-/**
- * libtty_get_uart_settings - get uart settings
- * @fd: file descriptor of tty device
- *
- * The function return 0 if success, others if fail.
- */
-static int libtty_get_uart_settings(int fd)
-{
-	int ret;
-	struct serial_struct ss;
-
-	ret = ioctl(fd, TIOCGSERIAL, &ss);
-	if (ret < 0) {
-		perror("TIOCGSERIAL failed");
-		return ret;
-	}
-
-	printf("TIOCGSERIAL: xmit_fifo_size = %i, baud_base = %i, "
-			"close_delay = %i, closing_wait = %i\n",
-			ss.xmit_fifo_size, ss.baud_base,
-			ss.close_delay, ss.closing_wait);
-	
-	return ret;
-}
-
-/**
- * libtty_set_uart_settings - set uart
- * @fd: file descriptor of tty device
- *
- * The function return 0 if success, others if fail.
- */
-static int libtty_set_uart_settings(int fd, struct serial_struct *ss)
-{
-	int ret;
-
-	ret = ioctl(fd, TIOCSSERIAL, ss);
-	if (ret < 0) {
-		perror("TIOCSSERIAL failed");
-	}
-	return ret;
-}
-
-/**
- * libtty_get_uart_state - get uart state
- * @fd: file descriptor of tty device
- *
- * The function return 0 if success, others if fail.
- */
-static int libtty_get_uart_state(int fd)
-{
-	int ret;
-	struct serial_icounter_struct icount = { 0 };
-
-	ret = ioctl(fd, TIOCGICOUNT, &icount);
-	if (ret < 0) {
-		perror("TIOCGSERIAL failed");
-		return ret;
-	}
-
-	printf("TIOCGICOUNT: cts = %i, dsr = %i, ring = %i, dcd = %i "
-			"frame(error) = %i, paritry(error) = %i, overrun(error) = %i\n",
-			icount.cts, icount.dsr, icount.rng, icount.dcd,
-			icount.frame, icount.parity, icount.overrun);
-	
-	return ret;
-}
-
-/**
- * libtty_wait_modem_change - wait for any of the 4 modem bits
- * (DCD, RI, DSR, CTS) to change. The caller should use TIOCGICOUNT
- * to see which bit has changed.
- *
- * @fd: file descriptor of tty device
- * @arg: The bits of interest are specified as a bit mask
- * in arg, by ORing together any of the bit values,
- * TIOCM_RNG, TIOCM_DSR, TIOCM_CD, and TIOCM_CTS.
- *
- * The function return 0 if success, others if fail.
- */
-static int libtty_wait_modem_change(int fd, unsigned long arg)
-{
-	int ret;
-	
-	ret = ioctl(fd, TIOCMIWAIT, arg);
-	if (ret < 0) {
-		perror("TIOCGSERIAL failed");
-		return ret;
-	}
-
-	return ret;
-}
-
 void sig_handler(int signo)
 {
     printf("capture sign no:%d\n",signo);
@@ -541,7 +445,7 @@ int main(int argc, char *argv[])
 		if (c != '\n')
 			printf("press s to set modem, z to clear modem, g to get modem, "
 					"b to send break, w to write, r to read, "
-					"C to get uart state, W to wait modem change, q for quit.\n");
+					"G to test gpio, q for quit.\n");
 		scanf("%c", &c);
 		if (c == 'q')
 			break;
@@ -560,12 +464,6 @@ int main(int argc, char *argv[])
 			break;
 		case 'w':
 			libtty_write(fd);
-			break;
-		case 'C':
-			libtty_get_uart_state(fd);
-			break;
-		case 'W':
-			libtty_wait_modem_change(fd, TIOCM_RNG | TIOCM_DSR | TIOCM_CD | TIOCM_CTS);
 			break;
 		case 'r':
 			libtty_read(fd);
