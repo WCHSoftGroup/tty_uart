@@ -9,8 +9,6 @@
  * the Free Software Foundation; either version 2 of the License.
  *
  * Cross-compile with cross-gcc -I /path/to/cross-kernel/include
- *
- * Version: V1.3
  * 
  * Update Log:
  * V1.0 - initial version
@@ -21,7 +19,6 @@
  * V1.2 - added custom baud rates supports
  * V1.3 - fixed get speed parameter in getopt_long
  *		- added file send operation
- *
  */
  
 #include <stdio.h>
@@ -306,28 +303,40 @@ static int libtty_tiocmset(int fd, char bDTR, char bRTS)
 /**
  * libtty_tiocmget - modem get
  * @fd: file descriptor of tty device
+ * @modembits: pointer to modem status
  *
  * The function return 0 if success, others if fail.
  */
-static int libtty_tiocmget(int fd)
+static int libtty_tiocmget(int fd, unsigned long *modembits)
 {
-	unsigned long modembits = 0;
 	int ret;
 
-	ret = ioctl(fd, TIOCMGET, &modembits);
-	if (modembits & TIOCM_DSR)
-		printf("DSR Active!\n");
-	if (modembits & TIOCM_CTS)
-		printf("CTS Active!\n");
-	if (modembits & TIOCM_CD)
-		printf("DCD Active!\n");
-	if (modembits & TIOCM_RI)
-		printf("RI Active!\n");
-	
-	if (ret)
-		return ret;
-	else
-		return modembits;
+	ret = ioctl(fd, TIOCMGET, modembits);
+	if (ret == 0) {
+		if (*modembits & TIOCM_DSR)
+			printf("DSR Active!\n");
+		if (*modembits & TIOCM_CTS)
+			printf("CTS Active!\n");
+		if (*modembits & TIOCM_CD)
+			printf("DCD Active!\n");
+		if (*modembits & TIOCM_RI)
+			printf("RI Active!\n");
+	}
+
+	return ret;
+}
+
+/**
+ * libtty_tiocmwait - wiat for modem signal to changed
+ * @fd: file descriptor of tty device
+ *
+ * The function return 0 if success, others if fail.
+ */
+static int libtty_tiocmwait(int fd)
+{
+	unsigned long modembits = TIOCM_DSR | TIOCM_CTS | TIOCM_CD | TIOCM_RI;
+
+	return ioctl(fd, TIOCMIWAIT, modembits);
 }
 
 /**
@@ -521,6 +530,7 @@ int main(int argc, char *argv[])
 	int fd;
 	int ret;
 	char c;
+	unsigned long modemstatus;
 
 	parse_opts(argc, argv);
 	
@@ -540,8 +550,8 @@ int main(int argc, char *argv[])
 
 	while (1) {
 		if (c != '\n')
-			printf("press s to set modem, z to clear modem, g to get modem, "
-					"b to send break, w to write once, r to read once, "
+			printf("press s to set rts and dtr, z to clear rts and dtr, g to get modem status(cts/dsr/ring/dcd), "
+					"h to wait for modem to be change, b to send break, w to send a string, r to read data once, "
 					"f to send file or save received data to file, q to quit this app.\n");
 		scanf("%c", &c);
 		if (c == 'q')
@@ -558,9 +568,14 @@ int main(int argc, char *argv[])
 				printf("libtty_tiocmset error: %d\n", ret);
 			break;
 		case 'g':
-			ret = libtty_tiocmget(fd);
+			ret = libtty_tiocmget(fd, &modemstatus);
 			if (ret)
 				printf("libtty_tiocmget error: %d\n", ret);
+			break;
+		case 'h':
+			ret = libtty_tiocmwait(fd);
+			if (ret)
+				printf("libtty_tiocmwait error: %d\n", ret);
 			break;
 		case 'b':
 			ret = libtty_sendbreak(fd);
