@@ -1,5 +1,7 @@
 /* 
- * TTY testing utility (using tty driver) - Copyright (C) 2020 WCH Corporation.
+ * TTY testing utility (using tty driver)
+ *
+ * Copyright (C) 2020 WCH Corporation.
  * Author: TECH39 <zhangj@wch.cn>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -7,17 +9,16 @@
  * the Free Software Foundation; either version 2 of the License.
  *
  * Cross-compile with cross-gcc -I /path/to/cross-kernel/include
- *
- * Version: V1.1
  * 
  * Update Log:
  * V1.0 - initial version
- * V1.1 - add hardflow control
- *		- add sendbreak
- *		- add uart to file function
+ * V1.1 - added hardflow control
+ *		- added sendbreak
+ *		- added uart to file function
  *		- VTIME and VMIN changed
- * V1.2 - add custom baud rates supports
- *
+ * V1.2 - added custom baud rates supports
+ * V1.3 - fixed get speed parameter in getopt_long
+ *		- added file send operation
  */
  
 #include <stdio.h>
@@ -43,7 +44,6 @@ static const char *device = "/dev/ttyUSB0";
 static int speed = 9600;
 static int hardflow = 0;
 static int verbose = 0;
-static int savefile = 0;
 static FILE *fp;
 
 static const struct option lopts[] = {
@@ -51,18 +51,16 @@ static const struct option lopts[] = {
 	{ "speed", optional_argument, 0, 'S' },
 	{ "verbose", optional_argument, 0, 'v' },
 	{ "hardflow", required_argument, 0, 'f' },
-	{ "savefile", required_argument, 0, 's' },
 	{ NULL, 0, 0, 0 },
 };
 
 static void print_usage(const char *prog)
 {
-	printf("Usage: %s [-DSvfs]\n", prog);
+	printf("Usage: %s [-DSvf]\n", prog);
 	puts("  -D --device    tty device to use\n"
 		 "  -S --speed     uart speed\n"
 		 "  -v --verbose   Verbose (show rx buffer)\n"
-		 "  -f --hardflow  open hardware flowcontrol\n"
-		 "  -s --savefile  save rx data to file\n");
+		 "  -f --hardflow  open hardware flowcontrol\n");
 	exit(1);
 }
 
@@ -71,7 +69,7 @@ static void parse_opts(int argc, char *argv[])
 	int c;
 	
 	while (1) {
-		c = getopt_long(argc, argv, "D:S::vfsh", lopts, NULL);
+		c = getopt_long(argc, argv, "D:S:vfh", lopts, NULL);
 		if (c == -1) {
 			break;
 		}
@@ -90,9 +88,6 @@ static void parse_opts(int argc, char *argv[])
 		case 'f':
 			hardflow = 1;
 			break;	
-		case 's':
-			savefile = 1;
-			break;
 		case 'h':
 		default:
 			print_usage(argv[0]);
@@ -108,7 +103,7 @@ static void parse_opts(int argc, char *argv[])
  *
  * The function return 0 if success, or -1 if fail.
  */
-int libtty_setcustombaudrate(int fd, int baudrate)
+static int libtty_setcustombaudrate(int fd, int baudrate)
 {
 	struct termios2 tio;
 
@@ -146,7 +141,7 @@ int libtty_setcustombaudrate(int fd, int baudrate)
  *
  * The function return 0 if success, or -1 if fail.
  */
-int libtty_setopt(int fd, int speed, int databits, int stopbits, char parity, char hardflow)
+static int libtty_setopt(int fd, int speed, int databits, int stopbits, char parity, char hardflow)
 {
 	struct termios newtio;
 	struct termios oldtio;
@@ -222,8 +217,8 @@ int libtty_setopt(int fd, int speed, int databits, int stopbits, char parity, ch
 	else
 		newtio.c_cflag &= ~CRTSCTS;
  
-	newtio.c_cc[VTIME] = 20;	/* Time-out value (tenths of a second) [!ICANON]. */
-	newtio.c_cc[VMIN] = 128;	/* Minimum number of bytes read at once [!ICANON]. */
+	newtio.c_cc[VTIME] = 10;	/* Time-out value (tenths of a second) [!ICANON]. */
+	newtio.c_cc[VMIN] = 0;	/* Minimum number of bytes read at once [!ICANON]. */
 	
 	tcflush(fd, TCIOFLUSH);  
 	
@@ -247,7 +242,7 @@ int libtty_setopt(int fd, int speed, int databits, int stopbits, char parity, ch
  *
  * In this demo device is opened blocked, you could modify it at will.
  */
-int libtty_open(const char *devname)
+static int libtty_open(const char *devname)
 {
 	int fd = open(devname, O_RDWR | O_NOCTTY | O_NDELAY); 
 	int flags = 0;
@@ -280,7 +275,7 @@ int libtty_open(const char *devname)
  *
  * The function return 0 if success, others if fail.
  */
-int libtty_close(int fd)
+static int libtty_close(int fd)
 {
 	return close(fd);
 }
@@ -293,7 +288,7 @@ int libtty_close(int fd)
  *
  * The function return 0 if success, others if fail.
  */
-int libtty_tiocmset(int fd, char bDTR, char bRTS)
+static int libtty_tiocmset(int fd, char bDTR, char bRTS)
 {
 	unsigned long controlbits = 0;
 	
@@ -308,97 +303,40 @@ int libtty_tiocmset(int fd, char bDTR, char bRTS)
 /**
  * libtty_tiocmget - modem get
  * @fd: file descriptor of tty device
+ * @modembits: pointer to modem status
  *
  * The function return 0 if success, others if fail.
  */
-int libtty_tiocmget(int fd)
+static int libtty_tiocmget(int fd, unsigned long *modembits)
 {
-	unsigned long modembits = 0;
 	int ret;
 
-	ret = ioctl(fd, TIOCMGET, &modembits);
-	if (modembits & TIOCM_DSR)
-		printf("DSR Active!\n");
-	if (modembits & TIOCM_CTS)
-		printf("CTS Active!\n");
-	if (modembits & TIOCM_CD)
-		printf("DCD Active!\n");
-	if (modembits & TIOCM_RI)
-		printf("RI Active!\n");
-	
-	if (ret)
-		return ret;
-	else
-		return modembits;
+	ret = ioctl(fd, TIOCMGET, modembits);
+	if (ret == 0) {
+		if (*modembits & TIOCM_DSR)
+			printf("DSR Active!\n");
+		if (*modembits & TIOCM_CTS)
+			printf("CTS Active!\n");
+		if (*modembits & TIOCM_CD)
+			printf("DCD Active!\n");
+		if (*modembits & TIOCM_RI)
+			printf("RI Active!\n");
+	}
+
+	return ret;
 }
 
 /**
- * libtty_write - write 100 bytes at one time
+ * libtty_tiocmwait - wiat for modem signal to changed
  * @fd: file descriptor of tty device
  *
+ * The function return 0 if success, others if fail.
  */
-void libtty_write(int fd)
+static int libtty_tiocmwait(int fd)
 {
-	int nwrite;
-	char buf[256];
-	int i;
-	
-	for (i = 0; i < 256; i++)
-		buf[i] = i;
-	
-	nwrite = write(fd, buf, sizeof(buf));
-	printf("wrote %d bytes already.\n", nwrite);
-}
+	unsigned long modembits = TIOCM_DSR | TIOCM_CTS | TIOCM_CD | TIOCM_RI;
 
-/**
- * libtty_read - reading data cyclically
- * @fd: file descriptor of tty device
- *
- */
-void libtty_read(int fd)
-{
-	int nwrite, nread;
-	char buf[4096];
-	int i;
-	int total = 0;
-	
-	if (savefile) {
-		fp = fopen("./fileoutput", "w+");
-		if (fp == NULL) {
-			printf("create file failed.\n");
-			return;
-		}
-	}
-	
-	while (1) {
-		nread = read(fd, buf, sizeof(buf));
-		if (nread >= 0) {
-			total += nread;
-			printf("read total %d bytes, %d this time.\n", total, nread);
-		} else
-			printf("read error!\n");
-
-		if (verbose) {
-			printf("*************************\n");
-			for (i = 0; i < nread; i++)
-				printf(" 0x%.2x", (uint8_t)buf[i]);
-			printf("\n*************************\n");		
-		}
-		if (savefile) {
-			fwrite(buf, sizeof(char), nread, fp);
-		}
-	}
-}
-
-void sig_handler(int signo)
-{
-    printf("capture sign no:%d\n",signo);
-	if (savefile) {
-		fflush(fp);
-		fsync(fileno(fp));
-		fclose(fp);
-	}
-	exit(0);
+	return ioctl(fd, TIOCMIWAIT, modembits);
 }
 
 /**
@@ -414,9 +352,177 @@ void sig_handler(int signo)
  *  If  the terminal is not using asynchronous serial data transmission, tcsendbreak() returns without tak©\
  *	ing any action.
  */
-int libtty_sendbreak(int fd)
+static int libtty_sendbreak(int fd)
 {
 	return tcsendbreak(fd, 0);
+}
+
+/**
+ * libtty_write - write data to uart
+ * @fd: file descriptor of tty device
+ *
+ * The function return the number of bytes written if success, others if fail.
+ */
+static int libtty_write(int fd)
+{
+	int nwrite;
+	char buf[4096];
+	int i;
+	
+	memset(buf, 0x00, sizeof(buf));
+	printf("please input string to send:\n");
+	scanf("%s", buf);
+	nwrite = write(fd, buf, strlen(buf));
+	printf("wrote %d bytes already.\n", nwrite);
+
+	return nwrite;
+}
+
+/**
+ * libtty_read - read data from uart
+ * @fd: file descriptor of tty device
+ *
+ * The function return the number of bytes read if success, others if fail.
+ */
+static int libtty_read(int fd)
+{
+	int nwrite, nread;
+	char buf[4096];
+	int i;
+	
+	nread = read(fd, buf, sizeof(buf));
+	if (nread >= 0) {
+		printf("read nread %d bytes.\n", nread);
+	} else {
+		printf("read error: %d\n", nread);
+		return nread;
+	}
+
+	if (verbose) {
+		printf("*************************\n");
+		for (i = 0; i < nread; i++)
+			printf(" 0x%.2x", (uint8_t)buf[i]);
+		printf("\n*************************\n");		
+	}
+
+	return nread;
+}
+
+/**
+ * libtty_file_send - send file from uart
+ * @fd: file descriptor of tty device
+ *
+ * The function return 0 if success, or -1 if fail.
+ */
+static int libtty_file_send(int fd)
+{
+	int nwrite;
+	char buf[4096];
+	int total = 0;
+	char filename[128];
+	int ret;
+	
+	printf("please input file name to send:\n");
+	scanf("%s", filename);
+
+	fp = fopen(filename, "r+");
+	if (fp == NULL) {
+		printf("file open failed.\n");
+		return -1;
+	}
+	
+	while (1) {
+		ret = fread(buf, 1, sizeof(buf), fp);
+		if (ret <= 0) {
+			return ret;
+		}
+		nwrite = write(fd, buf, ret);
+		if (nwrite >= 0) {
+			total += nwrite;
+			printf("write total %d bytes, %d this time.\n", total, nwrite);
+		} else {
+			printf("write error: %d\n", nwrite);
+			break;
+		}
+	}
+}
+
+/**
+ * libtty_file_read - receive uart data and save to file
+ * @fd: file descriptor of tty device
+ *
+ * The function will loop unless read uart fail or write file fail.
+ */
+static int libtty_file_read(int fd)
+{
+	int ret;
+	int nread;
+	char buf[4096];
+	int total = 0;
+	char filename[128];
+	
+	printf("please input file name to save:\n");
+	scanf("%s", filename);
+
+	fp = fopen(filename, "w+");
+	if (fp == NULL) {
+		printf("create file failed.\n");
+		return -1;
+	}
+	
+	while (1) {
+		nread = read(fd, buf, sizeof(buf));
+		if (nread >= 0) {
+			total += nread;
+			printf("read total %d bytes, %d this time.\n", total, nread);
+		} else {
+			printf("read error: %d\n", nread);
+			return nread;
+		}
+		ret = fwrite(buf, 1, nread, fp);
+		if (ret != nread) {
+			printf("write file error: %d\n", ret);
+			return ret;
+		}
+	}
+}
+
+static int file_operation(int fd)
+{
+	int ret;
+	char c;
+
+	printf("press w to send file from uart, press r to receive uart data and save to file.\n");
+	scanf(" %c", &c);
+	if (c == 'w') {
+		ret = libtty_file_send(fd);
+		if (ret) {
+			printf("libtty_file_send error: %d\n", ret);
+			goto exit;
+		}
+		printf("file has been sent over.\n");
+	} else if (c == 'r') {
+		ret = libtty_file_read(fd);
+		if (ret) {
+			printf("libtty_file_read error: %d\n", ret);
+			goto exit;
+		}
+	} else {
+		printf("bad choice.\n");
+	}
+exit:
+	return ret;
+}
+
+static void sig_handler(int signo)
+{
+    printf("capture sign no:%d\n",signo);
+	if (fp != NULL) {
+		fflush(fp);
+		fsync(fileno(fp));
+		fclose(fp);
+	}
+	exit(0);
 }
 
 int main(int argc, char *argv[])
@@ -424,6 +530,7 @@ int main(int argc, char *argv[])
 	int fd;
 	int ret;
 	char c;
+	unsigned long modemstatus;
 
 	parse_opts(argc, argv);
 	
@@ -431,7 +538,7 @@ int main(int argc, char *argv[])
 	
 	fd = libtty_open(device);
 	if (fd < 0) {
-		printf("libtty_open error.\n");
+		printf("libtty_open: %s error.\n", device);
 		exit(0);
 	}
 	
@@ -443,31 +550,52 @@ int main(int argc, char *argv[])
 
 	while (1) {
 		if (c != '\n')
-			printf("press s to set modem, z to clear modem, g to get modem, "
-					"b to send break, w to write, r to read, "
-					"G to test gpio, q for quit.\n");
+			printf("press s to set rts and dtr, z to clear rts and dtr, g to get modem status(cts/dsr/ring/dcd), "
+					"h to wait for modem to be change, b to send break, w to send a string, r to read data once, "
+					"f to send file or save received data to file, q to quit this app.\n");
 		scanf("%c", &c);
 		if (c == 'q')
 			break;
 		switch (c) {
 		case 's':
-			libtty_tiocmset(fd, 1, 1);
+			ret = libtty_tiocmset(fd, 1, 1);
+			if (ret)
+				printf("libtty_tiocmset error: %d\n", ret);
 			break;
 		case 'z':
-			libtty_tiocmset(fd, 0, 0);
+			ret = libtty_tiocmset(fd, 0, 0);
+			if (ret)
+				printf("libtty_tiocmset error: %d\n", ret);
 			break;
 		case 'g':
-			libtty_tiocmget(fd);
+			ret = libtty_tiocmget(fd, &modemstatus);
+			if (ret)
+				printf("libtty_tiocmget error: %d\n", ret);
+			break;
+		case 'h':
+			ret = libtty_tiocmwait(fd);
+			if (ret)
+				printf("libtty_tiocmwait error: %d\n", ret);
 			break;
 		case 'b':
-			libtty_sendbreak(fd);
+			ret = libtty_sendbreak(fd);
+			if (ret)
+				printf("libtty_sendbreak error: %d\n", ret);
 			break;
 		case 'w':
-			libtty_write(fd);
+			ret = libtty_write(fd);
+			if (ret <= 0)
+				printf("libtty_write error: %d\n", ret);
 			break;
 		case 'r':
-			libtty_read(fd);
+			ret = libtty_read(fd);
+			if (ret < 0)
+				printf("libtty_read error: %d\n", ret);
 			break;
+		case 'f':
+			ret = file_operation(fd);
+			if (ret)
+				printf("file read/write error: %d\n", ret);
 		default:
 			break;
 		}
@@ -479,4 +607,3 @@ int main(int argc, char *argv[])
 		exit(0);
 	}
 }
-
