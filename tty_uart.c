@@ -1,41 +1,43 @@
-/* 
+/*
  * TTY testing utility (using tty driver)
  *
- * Copyright (C) 2020 WCH Corporation.
- * Author: TECH39 <zhangj@wch.cn>
+ * Copyright (C) 2024 Nanjing Qinheng Microelectronics Co., Ltd.
+ * Web: http://wch.cn
+ * Author: WCH <tech@wch.cn>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License.
  *
  * Cross-compile with cross-gcc -I /path/to/cross-kernel/include
- * 
+ *
  * Update Log:
  * V1.0 - initial version
- * V1.1 - added hardflow control
- *		- added sendbreak
- *		- added uart to file function
- *		- VTIME and VMIN changed
- * V1.2 - added custom baud rates supports
- * V1.3 - fixed get speed parameter in getopt_long
- *		- added file send operation
+ * V1.1 - add hardflow control
+ *      - add sendbreak
+ *      - add uart to file function
+ *      - VTIME and VMIN changed
+ * V1.2 - add custom baud rates supports
+ * V1.3 - fix get speed parameter in getopt_long
+ *      - add file send operation
+ * V1.4 - add mark and space parity supports
  */
- 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
-#include <fcntl.h>  
-#include <errno.h>   
+#include <fcntl.h>
+#include <errno.h>
 #include <string.h>
-#include <sys/types.h> 
+#include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
 #include <getopt.h>
 #include <linux/serial.h>
 #define termios asmtermios
 #include <asm/termios.h>
-#undef  termios
+#undef termios
 #include <termios.h>
 
 extern int ioctl(int d, int request, ...);
@@ -58,16 +60,16 @@ static void print_usage(const char *prog)
 {
 	printf("Usage: %s [-DSvf]\n", prog);
 	puts("  -D --device    tty device to use\n"
-		 "  -S --speed     uart speed\n"
-		 "  -v --verbose   Verbose (show rx buffer)\n"
-		 "  -f --hardflow  open hardware flowcontrol\n");
+	     "  -S --speed     uart speed\n"
+	     "  -v --verbose   Verbose (show rx buffer)\n"
+	     "  -f --hardflow  open hardware flowcontrol\n");
 	exit(1);
 }
 
 static void parse_opts(int argc, char *argv[])
 {
 	int c;
-	
+
 	while (1) {
 		c = getopt_long(argc, argv, "D:S:vfh", lopts, NULL);
 		if (c == -1) {
@@ -87,7 +89,7 @@ static void parse_opts(int argc, char *argv[])
 			break;
 		case 'f':
 			hardflow = 1;
-			break;	
+			break;
 		case 'h':
 		default:
 			print_usage(argv[0]);
@@ -146,82 +148,96 @@ static int libtty_setopt(int fd, int speed, int databits, int stopbits, char par
 	struct termios newtio;
 	struct termios oldtio;
 	int i;
-	
+
 	bzero(&newtio, sizeof(newtio));
 	bzero(&oldtio, sizeof(oldtio));
-	
+
 	if (tcgetattr(fd, &oldtio) != 0) {
-		perror("tcgetattr");    
-		return -1; 
+		perror("tcgetattr");
+		return -1;
 	}
 	newtio.c_cflag |= CLOCAL | CREAD;
 	newtio.c_cflag &= ~CSIZE;
- 
+
 	/* set data bits */
 	switch (databits) {
-	case 5:                
+	case 5:
 		newtio.c_cflag |= CS5;
 		break;
-	case 6:                
+	case 6:
 		newtio.c_cflag |= CS6;
 		break;
-	case 7:                
+	case 7:
 		newtio.c_cflag |= CS7;
 		break;
-	case 8:    
+	case 8:
 		newtio.c_cflag |= CS8;
-		break;  
-	default:   
+		break;
+	default:
 		fprintf(stderr, "unsupported data size\n");
-		return -1; 
-	}
-	
-	/* set parity */
-	switch (parity) {  
-	case 'n':
-	case 'N':
-		newtio.c_cflag &= ~PARENB;    /* Clear parity enable */
-		newtio.c_iflag &= ~INPCK;     /* Disable input parity check */
-		break; 
-	case 'o':  
-	case 'O':    
-		newtio.c_cflag |= (PARODD | PARENB); /* Odd parity instead of even */
-		newtio.c_iflag |= INPCK;     /* Enable input parity check */
-		break; 
-	case 'e': 
-	case 'E':  
-		newtio.c_cflag |= PARENB;    /* Enable parity */   
-		newtio.c_cflag &= ~PARODD;   /* Even parity instead of odd */  
-		newtio.c_iflag |= INPCK;     /* Enable input parity check */
-		break;
-	default:  
-		fprintf(stderr, "unsupported parity\n");
-		return -1; 
-	} 
-	
-	/* set stop bits */ 
-	switch (stopbits) {  
-	case 1:   
-		newtio.c_cflag &= ~CSTOPB; 
-		break;
-	case 2:   
-		newtio.c_cflag |= CSTOPB; 
-		break;
-	default:   
-		perror("unsupported stop bits\n"); 
 		return -1;
 	}
- 
+
+	/* set parity */
+	switch (parity) {
+	case 'n':
+	case 'N':
+		newtio.c_cflag &= ~PARENB; /* Clear parity enable */
+		newtio.c_iflag &= ~INPCK;  /* Disable input parity check */
+		break;
+	case 'o':
+	case 'O':
+		newtio.c_cflag |= (PARODD | PARENB); /* Odd parity instead of even */
+		newtio.c_iflag |= INPCK;	     /* Enable input parity check */
+		break;
+	case 'e':
+	case 'E':
+		newtio.c_cflag |= PARENB;  /* Enable parity */
+		newtio.c_cflag &= ~PARODD; /* Even parity instead of odd */
+		newtio.c_iflag |= INPCK;   /* Enable input parity check */
+		break;
+	case 'm':
+	case 'M':
+		newtio.c_cflag |= PARENB; /* Enable parity */
+		newtio.c_cflag |= CMSPAR; /* Stick parity instead */
+		newtio.c_cflag |= PARODD; /* Even parity instead of odd */
+		newtio.c_iflag |= INPCK;  /* Enable input parity check */
+		break;
+	case 's':
+	case 'S':
+		newtio.c_cflag |= PARENB;  /* Enable parity */
+		newtio.c_cflag |= CMSPAR;  /* Stick parity instead */
+		newtio.c_cflag &= ~PARODD; /* Even parity instead of odd */
+		newtio.c_iflag |= INPCK;   /* Enable input parity check */
+		break;
+	default:
+		fprintf(stderr, "unsupported parity\n");
+		return -1;
+	}
+
+	/* set stop bits */
+	switch (stopbits) {
+	case 1:
+		newtio.c_cflag &= ~CSTOPB;
+		break;
+	case 2:
+		newtio.c_cflag |= CSTOPB;
+		break;
+	default:
+		perror("unsupported stop bits\n");
+		return -1;
+	}
+
 	if (hardflow)
 		newtio.c_cflag |= CRTSCTS;
 	else
 		newtio.c_cflag &= ~CRTSCTS;
- 
-	newtio.c_cc[VTIME] = 10;	/* Time-out value (tenths of a second) [!ICANON]. */
-	newtio.c_cc[VMIN] = 0;	/* Minimum number of bytes read at once [!ICANON]. */
-	
-	tcflush(fd, TCIOFLUSH);  
-	
+
+	newtio.c_cc[VTIME] = 10; /* Time-out value (tenths of a second) [!ICANON]. */
+	newtio.c_cc[VMIN] = 0;	 /* Minimum number of bytes read at once [!ICANON]. */
+
+	tcflush(fd, TCIOFLUSH);
+
 	if (tcsetattr(fd, TCSANOW, &newtio) != 0) {
 		perror("tcsetattr");
 		return -1;
@@ -235,7 +251,7 @@ static int libtty_setopt(int fd, int speed, int databits, int stopbits, char par
 
 	return 0;
 }
- 
+
 /**
  * libtty_open - open tty device
  * @devname: the device name to open
@@ -244,31 +260,30 @@ static int libtty_setopt(int fd, int speed, int databits, int stopbits, char par
  */
 static int libtty_open(const char *devname)
 {
-	int fd = open(devname, O_RDWR | O_NOCTTY | O_NDELAY); 
+	int fd = open(devname, O_RDWR | O_NOCTTY | O_NDELAY);
 	int flags = 0;
-	
-	if (fd < 0) {                        
+
+	if (fd < 0) {
 		perror("open device failed");
-		return -1;            
+		return -1;
 	}
-	
+
 	flags = fcntl(fd, F_GETFL, 0);
 	flags &= ~O_NONBLOCK;
 	if (fcntl(fd, F_SETFL, flags) < 0) {
 		printf("fcntl failed.\n");
 		return -1;
 	}
-		
+
 	if (isatty(fd) == 0) {
 		printf("not tty device.\n");
 		return -1;
-	}
-	else
+	} else
 		printf("tty device test ok.\n");
-	
+
 	return fd;
 }
- 
+
 /**
  * libtty_close - close tty device
  * @fd: the device handle
@@ -279,7 +294,7 @@ static int libtty_close(int fd)
 {
 	return close(fd);
 }
- 
+
 /**
  * libtty_tiocmset - modem set
  * @fd: file descriptor of tty device
@@ -291,12 +306,12 @@ static int libtty_close(int fd)
 static int libtty_tiocmset(int fd, char bDTR, char bRTS)
 {
 	unsigned long controlbits = 0;
-	
+
 	if (bDTR)
 		controlbits |= TIOCM_DTR;
 	if (bRTS)
 		controlbits |= TIOCM_RTS;
-	
+
 	return ioctl(fd, TIOCMSET, &controlbits);
 }
 
@@ -344,13 +359,13 @@ static int libtty_tiocmwait(int fd)
  * @fd: file descriptor of tty device
  *
  * Description:
- *  tcsendbreak() transmits a continuous stream of zero-valued bits for a specific duration, if the  termi©\
- *	nal is using asynchronous serial data transmission.  If duration is zero, it transmits zero-valued bits
- *	for at least 0.25 seconds, and not more that 0.5 seconds.  If duration is not zero, it sends  zero-val©\
- *	ued bits for some implementation-defined length of time.
+ *  tcsendbreak() transmits a continuous stream of zero-valued bits for a specific duration, if the terminal
+ *  is using asynchronous serial data transmission. If duration is zero, it transmits zero-valued bits for
+ *  at least 0.25 seconds, and not more that 0.5 seconds. If duration is not zero, it sends zero-valued bits
+ *  for some implementation-defined length of time.
  *
- *  If  the terminal is not using asynchronous serial data transmission, tcsendbreak() returns without tak©\
- *	ing any action.
+ *  If the terminal is not using asynchronous serial data transmission, tcsendbreak() returns without taking
+ *  any action.
  */
 static int libtty_sendbreak(int fd)
 {
@@ -389,10 +404,12 @@ static int libtty_read(int fd)
 	int nwrite, nread;
 	char buf[4096];
 	int i;
-	
+	int total = 0;
+
 	nread = read(fd, buf, sizeof(buf));
 	if (nread >= 0) {
-		printf("read nread %d bytes.\n", nread);
+		total += nread;
+		printf("read nread %d bytes, total: %d.\n", nread, total);
 	} else {
 		printf("read error: %d\n", nread);
 		return nread;
@@ -402,7 +419,7 @@ static int libtty_read(int fd)
 		printf("*************************\n");
 		for (i = 0; i < nread; i++)
 			printf(" 0x%.2x", (uint8_t)buf[i]);
-		printf("\n*************************\n");		
+		printf("\n*************************\n");
 	}
 
 	return nread;
@@ -421,7 +438,7 @@ static int libtty_file_send(int fd)
 	int total = 0;
 	char filename[128];
 	int ret;
-	
+
 	printf("please input file name to send:\n");
 	scanf("%s", filename);
 
@@ -430,7 +447,7 @@ static int libtty_file_send(int fd)
 		printf("file open failed.\n");
 		return -1;
 	}
-	
+
 	while (1) {
 		ret = fread(buf, 1, sizeof(buf), fp);
 		if (ret <= 0) {
@@ -460,7 +477,7 @@ static int libtty_file_read(int fd)
 	char buf[4096];
 	int total = 0;
 	char filename[128];
-	
+
 	printf("please input file name to save:\n");
 	scanf("%s", filename);
 
@@ -469,7 +486,7 @@ static int libtty_file_read(int fd)
 		printf("create file failed.\n");
 		return -1;
 	}
-	
+
 	while (1) {
 		nread = read(fd, buf, sizeof(buf));
 		if (nread >= 0) {
@@ -514,9 +531,83 @@ exit:
 	return ret;
 }
 
+/**
+ * libtty_get_icount - get counts of input serial line interrupts
+ * @fd: file descriptor of tty device
+ * 
+ * The function return 0 if success, or -1 if fail.
+ *
+ * Description:
+ *	Get counts of input serial line interrupts (DCD, RI, DSR,
+ *	CTS).  The counts are written to the
+ *	serial_icounter_struct structure pointed to by argp.
+
+ *	Note: both 1->0 and 0->1 transitions are counted, except
+ *	for RI, where only 0->1 transitions are counted.
+ */
+static int libtty_get_icount(int fd)
+{
+	struct serial_icounter_struct icount = { 0 };
+
+	int ret = ioctl(fd, TIOCGICOUNT, &icount);
+	if (ret < 0) {
+		perror("error in TIOCGICOUNT");
+	} else {
+		printf("TIOCGICOUNT: \n\t ret = %i \n\t icount.rx = %i \n\t icount.tx = %i \n\t icount.frame = %i \n\t icount.overrun = %i"
+		       "\n\t icount.parity = %i \n\t icount.brk = %i \n\t icount.buf_overrun = %i\n",
+		       ret, icount.rx, icount.tx, icount.frame, icount.overrun, icount.parity, icount.brk,
+		       icount.buf_overrun);
+	}
+
+	return ret;
+}
+
+/**
+ * libtty_modemwait - wait modem status to change
+ * @fd: file descriptor of tty device
+ * @arg: TIOCM_RNG, TIOCM_DSR, TIOCM_CD, and TIOCM_CTS
+ * 
+ * The function return 0 if success, or -1 if fail.
+ *
+ * Description:
+ *	Wait for any of the 4 modem bits (DCD, RI, DSR, CTS) to
+ *	change.  The bits of interest are specified as a bit mask
+ *	in arg, by ORing together any of the bit values,
+ *	TIOCM_RNG, TIOCM_DSR, TIOCM_CD, and TIOCM_CTS.  The caller
+ *	should use TIOCGICOUNT to see which bit has changed.
+ */
+static int libtty_modemwait(int fd, int arg)
+{
+	return ioctl(fd, TIOCMIWAIT, arg);
+}
+
+/**
+ * libtty_getserial - gets the serial line information.
+ * @fd: file descriptor of tty device
+ * 
+ * The function return 0 if success, or -1 if fail.
+ */
+static int libtty_getserial(int fd)
+{
+	struct serial_struct serial_setting;
+	return ioctl(fd, TIOCGSERIAL, &serial_setting);
+}
+
+/**
+ * libtty_setserial - sets the serial line information.
+ * @fd: file descriptor of tty device
+ * @serial_setting: serial line setting to set
+ * 
+ * The function return 0 if success, or -1 if fail.
+ */
+static int libtty_setserial(int fd, struct serial_struct *serial_setting)
+{
+	return ioctl(fd, TIOCSSERIAL, serial_setting);
+}
+
 static void sig_handler(int signo)
 {
-    printf("capture sign no:%d\n",signo);
+	printf("capture sign no:%d\n", signo);
 	if (fp != NULL) {
 		fflush(fp);
 		fsync(fileno(fp));
@@ -533,15 +624,15 @@ int main(int argc, char *argv[])
 	unsigned long modemstatus;
 
 	parse_opts(argc, argv);
-	
-	signal(SIGINT, sig_handler); 
-	
+
+	signal(SIGINT, sig_handler);
+
 	fd = libtty_open(device);
 	if (fd < 0) {
 		printf("libtty_open: %s error.\n", device);
 		exit(0);
 	}
-	
+
 	ret = libtty_setopt(fd, speed, 8, 1, 'n', hardflow);
 	if (ret != 0) {
 		printf("libtty_setopt error.\n");
@@ -551,8 +642,9 @@ int main(int argc, char *argv[])
 	while (1) {
 		if (c != '\n')
 			printf("press s to set rts and dtr, z to clear rts and dtr, g to get modem status(cts/dsr/ring/dcd), "
-					"h to wait for modem to be change, b to send break, w to send a string, r to read data once, "
-					"f to send file or save received data to file, q to quit this app.\n");
+			       "h to wait for modem to be change, b to send break, w to send a string, r to read data once, "
+			       "G to get counts of input serial line interrupts, W to wait modem status to change, "
+			       "f to send file or save received data to file, q to quit this app.\n");
 		scanf("%c", &c);
 		if (c == 'q')
 			break;
@@ -592,6 +684,16 @@ int main(int argc, char *argv[])
 			if (ret < 0)
 				printf("libtty_read error: %d\n", ret);
 			break;
+		case 'G':
+			ret = libtty_get_icount(fd);
+			if (ret < 0)
+				printf("libtty_get_icount error: %d\n", ret);
+			break;
+		case 'W':
+			ret = libtty_modemwait(fd, TIOCM_RNG | TIOCM_DSR | TIOCM_CD | TIOCM_CTS);
+			if (ret < 0)
+				printf("libtty_modemwait error: %d\n", ret);
+			break;
 		case 'f':
 			ret = file_operation(fd);
 			if (ret)
@@ -600,7 +702,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
- 	
+
 	ret = libtty_close(fd);
 	if (ret != 0) {
 		printf("libtty_close error.\n");
